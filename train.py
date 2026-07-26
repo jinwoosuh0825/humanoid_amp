@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -44,17 +44,21 @@ parser.add_argument(
     "--ml_framework",
     type=str,
     default="torch",
-    choices=["torch", "jax", "jax-numpy"],
+    choices=["torch", "jax"],
     help="The ML framework used for training the skrl agent.",
 )
 parser.add_argument(
     "--algorithm",
     type=str,
     default="PPO",
-    choices=["AMP", "PPO", "IPPO", "MAPPO"],
-    help="The RL algorithm used for training the skrl agent.",
+    help=(
+        "Name of the RL algorithm to use (e.g. AMP, DDPG, IPPO, MAPPO, PPO, SAC, TD3, etc.) "
+        "when several algorithms exist for the same task. For a more specific selection, use the argument --agent."
+    ),
 )
-
+parser.add_argument(
+    "--ray-proc-id", "-rid", type=int, default=None, help="Automatically configured by Ray integration, otherwise None."
+)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -72,17 +76,18 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
+import logging
 import os
 import random
+import time
 from datetime import datetime
 
-import omni
+import gymnasium as gym
 import skrl
 from packaging import version
 
 # check for minimum supported skrl version
-SKRL_VERSION = "1.4.3"
+SKRL_VERSION = "2.0.0"
 if version.parse(skrl.__version__) < version.parse(SKRL_VERSION):
     skrl.logger.error(
         f"Unsupported skrl version: {skrl.__version__}. "
@@ -111,6 +116,9 @@ from isaaclab_rl.skrl import SkrlVecEnvWrapper
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
+# import logger
+logger = logging.getLogger(__name__)
+
 # PLACEHOLDER: Extension template (do not remove this comment)
 
 # config shortcuts
@@ -128,6 +136,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # check for invalid combination of CPU device with distributed training
+    if args_cli.distributed and args_cli.device is not None and "cpu" in args_cli.device:
+        raise ValueError(
+            "Distributed training is not supported when using CPU device. "
+            "Please use GPU device (e.g., --device cuda) for distributed training."
+        )
 
     # multi-gpu training config
     if args_cli.distributed:
@@ -155,10 +170,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
     # specify directory for logging runs: {time-stamp}_{run_name}
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") + f"_{algorithm}_{args_cli.ml_framework}"
-    # The Ray Tune workflow extracts experiment name using the logging line below, hence, do not change it (see PR #2346, comment-2819298849)
+    # The Ray Tune workflow extracts experiment name using the logging line below, hence,
+    # do not change it (see PR #2346, comment-2819298849)
     print(f"Exact experiment name requested from command line: {log_dir}")
     if agent_cfg["agent"]["experiment"]["experiment_name"]:
-        log_dir += f'_{agent_cfg["agent"]["experiment"]["experiment_name"]}'
+        log_dir += f"_{agent_cfg['agent']['experiment']['experiment_name']}"
     # set directory into agent config
     agent_cfg["agent"]["experiment"]["directory"] = log_root_path
     agent_cfg["agent"]["experiment"]["experiment_name"] = log_dir
@@ -176,7 +192,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env_cfg, ManagerBasedRLEnvCfg):
         env_cfg.export_io_descriptors = args_cli.export_io_descriptors
     else:
-        omni.log.warn(
+        logger.warning(
             "IO descriptors are only supported for manager based RL environments. No IO descriptors will be exported."
         )
 
@@ -202,6 +218,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
 
+    start_time = time.time()
+
     # wrap around environment for skrl
     env = SkrlVecEnvWrapper(env, ml_framework=args_cli.ml_framework)  # same as: `wrap_env(env, wrapper="auto")`
 
@@ -216,6 +234,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # run training
     runner.run()
+
+    print(f"Training time: {round(time.time() - start_time, 2)} seconds")
 
     # close the simulator
     env.close()
