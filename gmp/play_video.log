@@ -1,0 +1,119 @@
+[Warning] [simulation_app.simulation_app] Modules: ['omni.kit_app'] were loaded before SimulationApp was started and might not be loaded correctly.
+[Warning] [simulation_app.simulation_app] Please check to make sure no extra omniverse or pxr modules are imported before the call to SimulationApp(...)
+Loading user config located at: '/root/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/omni/data/Kit/Isaac-Sim/5.0/user.config.json'
+[Info] [carb] Logging to file: /root/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/omni/logs/Kit/Isaac-Sim/5.0/kit_20260727_071551.log
+2026-07-27T07:15:51Z [204ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:51Z [204ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:51Z [269ms] [Warning] [omni.platforminfo.plugin] failed to open the default display.  Can't verify X Server version.
+2026-07-27T07:15:51Z [508ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:51Z [508ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:51Z [508ms] [Error] [carb.glinterop.plugin] GLInteropContext::init: carb::windowing is not available
+2026-07-27T07:15:51Z [635ms] [Error] [gpu.foundation.plugin] Multiple Installable Client Drivers (ICDs) are found for the same GPU on the system. This causes the same GPU to be reported multiple times by more than one driver and leads to instability or crash. 
+It requires multi-gpu mode to be disabled and the correct device with the correct driver to be set via activeGpu setting.
+For NVIDIA drivers, please follow troubleshooting docs to uninstall and completely purge Linux-distribution-provided driver packages, and then reinstall your driver cleanly via .run package. Otherwise, updating Ubuntu software may reinstall a secondary ICD or override the existing NVIDIA driver.
+
+To verify the proper NVIDIA driver installation, only one of the following icd.d folders should contain nvidia_icd.json file:
+/etc/vulkan/icd.d: Location of ICDs installed from non-Linux-distribution-provided packages
+/usr/share/vulkan/icd.d : Location of ICDs installed from Linux-distribution-provided packages
+
+|---------------------------------------------------------------------------------------------|
+| Driver Version: 550.107.02    | Graphics API: Vulkan
+|=============================================================================================|
+| GPU | Name                             | Active | LDA | GPU Memory | Vendor-ID | LUID       |
+|     |                                  |        |     |            | Device-ID | UUID       |
+|     |                                  |        |     |            | Bus-ID    |            |
+|---------------------------------------------------------------------------------------------|
+| 0   | NVIDIA GeForce RTX 3090          | Yes: 0 |     | 24822   MB | 10de      | 0          |
+|     |                                  |        |     |            | 2204      | 69bfd2f1.. |
+|     |                                  |        |     |            | 23        |            |
+|---------------------------------------------------------------------------------------------|
+| 1   | NVIDIA GeForce RTX 3090          |        |     | 24822   MB | 10de      | 0          |
+|     |                                  |        |     |            | 2204      | 69bfd2f1.. |
+|     |                                  |        |     |            | 23        |            |
+|=============================================================================================|
+| OS: 22.04.4 LTS (Jammy Jellyfish) ubuntu, Version: 22.04.4, Kernel: 5.4.0-171-generic
+| Processor: Intel(R) Xeon(R) Silver 4210R CPU @ 2.40GHz
+| Cores: 20 | Logical Cores: 40
+|---------------------------------------------------------------------------------------------|
+| Total Memory (MB): 193047 | Free Memory: 171756
+| Total Page/Swap (MB): 8191 | Free Page/Swap: 8183
+|---------------------------------------------------------------------------------------------|
+2026-07-27T07:15:52Z [933ms] [Warning] [gpu.foundation.plugin] CPU performance profile is set to powersave. This profile sets the CPU to the lowest frequency reducing performance.
+2026-07-27T07:15:52Z [1,716ms] [Warning] [omni.platforminfo.plugin] failed to load XRAndR.
+2026-07-27T07:15:53Z [1,948ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:53Z [1,948ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:53Z [1,964ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:53Z [1,964ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:53Z [1,974ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:53Z [1,974ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:53Z [2,001ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:53Z [2,001ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:53Z [2,003ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:53Z [2,003ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:53Z [2,005ms] [Warning] [carb.windowing-glfw.plugin] GLFW initialization failed.
+2026-07-27T07:15:53Z [2,005ms] [Warning] [carb] Failed to startup plugin carb.windowing-glfw.plugin (interfaces: [carb::windowing::IGLContext v1.0],[carb::windowing::IWindowing v1.5]) (impl: carb.windowing-glfw.plugin)
+2026-07-27T07:15:53Z [2,218ms] [Warning] [omni.log] Source: omni.hydra was already registered.
+/root/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/gymnasium/envs/registration.py:636: UserWarning: [33mWARN: Overriding environment Isaac-Humanoid-AMP-Dance-Direct-v0 already in registry.[0m
+  logger.warn(f"Overriding environment {new_spec.id} already in registry.")
+/root/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/gymnasium/envs/registration.py:636: UserWarning: [33mWARN: Overriding environment Isaac-Humanoid-AMP-Run-Direct-v0 already in registry.[0m
+  logger.warn(f"Overriding environment {new_spec.id} already in registry.")
+/root/miniconda3/envs/env_isaaclab/lib/python3.11/site-packages/gymnasium/envs/registration.py:636: UserWarning: [33mWARN: Overriding environment Isaac-Humanoid-AMP-Walk-Direct-v0 already in registry.[0m
+  logger.warn(f"Overriding environment {new_spec.id} already in registry.")
+2026-07-27T07:15:54Z [3,070ms] [Warning] [omni.isaac.dynamic_control] omni.isaac.dynamic_control is deprecated as of Isaac Sim 4.5. No action is needed from end-users.
+2026-07-27T07:15:57Z [6,005ms] [Warning] [pxr.Semantics] pxr.Semantics is deprecated - please use Semantics instead
+2026-07-27T07:15:57Z [6,186ms] [Warning] [omni.replicator.core.scripts.extension] No material configuration file, adding configuration to material settings directly.
+2026-07-27T07:16:02Z [10,989ms] [Warning] [usdrt.population.plugin] using high frequency span is disabled
+2026-07-27T07:16:02Z [11,204ms] [Warning] [carb] Acquiring non optional plugin interface which is not listed as dependency: [carb::dictionary::ISerializer v1.1] (plugin: carb.dictionary.serializer-json.plugin), by client: carb.scenerenderer-rtx.plugin. Add it to CARB_PLUGIN_IMPL_DEPS() macro of a client.
+[INFO][AppLauncher]: Using device: cuda:0
+[INFO][AppLauncher]: Loading experience file: /root/IsaacLab/apps/isaaclab.python.headless.rendering.kit
+[INFO]: Parsing configuration from: humanoid_amp.g1_gmp_env_cfg:G1GmpWalkEnvCfg
+[INFO]: Parsing configuration from: /root/humanoid_amp/agents/skrl_g1_walk_gmp_cfg.yaml
+[38;20m[skrl:INFO] Environment wrapper: Isaac Lab (single-agent)[0m
+[INFO] Loading experiment from directory: /root/humanoid_amp/logs/skrl/g1_gmp_walk
+Setting seed: 42
+[INFO]: Base environment:
+	Environment device    : cuda:0
+	Environment seed      : 42
+	Physics step-size     : 0.016666666666666666
+	Rendering step-size   : 0.03333333333333333
+	Environment step-size : 0.03333333333333333
+[INFO]: Time taken for scene creation : 1.251530 seconds
+[INFO]: Scene manager:  <class InteractiveScene>
+	Number of environments: 4
+	Environment spacing   : 4.0
+	Source prim name      : /World/envs/env_0
+	Global prim paths     : []
+	Replicate physics     : True
+[INFO]: Starting the simulation. This may take a few seconds. Please wait...
+[INFO]: Time taken for simulation start : 2.747829 seconds
+[INFO]: Completed setting up the environment...
+Motion loaded (/root/humanoid_amp/motions/G1_walk.npz): duration: 6.633333333333333 sec, frames: 399
+[GMP] Loaded frozen decoder from /root/humanoid_amp/gmp/checkpoints/cvae_walk.pt (motion_dim=95, latent_dim=32)
+[INFO] Recording videos during training.
+        video_folder: /root/humanoid_amp/logs/skrl/g1_gmp_walk/2026-07-27_07-05-47_ppo_torch/videos/play
+        step_trigger: lambda step: step == 0
+        video_length: 200
+        disable_logger: True
+[2026-07-27 07:16:12,553][skrl][INFO] - Environment wrapper: Isaac Lab (single-agent)
+[33;20m[skrl:WARNING] The 'state_preprocessor' field in the configuration has been replaced by 'observation_preprocessor'. If the 'state_preprocessor' definition is desired but the `observation_preprocessor` is not, define the last one to None (null) to avoid the automatic replacement[0m
+[2026-07-27 07:16:12,554][skrl][WARNING] - The 'state_preprocessor' field in the configuration has been replaced by 'observation_preprocessor'. If the 'state_preprocessor' definition is desired but the `observation_preprocessor` is not, define the last one to None (null) to avoid the automatic replacement
+[38;20m[skrl:INFO] Seed: 42[0m
+[2026-07-27 07:16:12,555][skrl][INFO] - Seed: 42
+[INFO] Loading model checkpoint from: /root/humanoid_amp/logs/skrl/g1_gmp_walk/2026-07-27_07-05-47_ppo_torch/checkpoints/agent_8000.pt
+Setting seed: 0
+2026-07-27T07:16:05Z [14,472ms] [Warning] [usdrt.hydra.fabric_scene_delegate.plugin] using high frequency span is disabled
+2026-07-27T07:16:05Z [14,472ms] [Warning] [usdrt.hydra.fabric_scene_delegate.plugin] using high frequency span is disabled
+2026-07-27T07:16:05Z [14,473ms] [Warning] [usdrt.hydra.fabric_scene_delegate.plugin] using high frequency span with attrs is disabled
+2026-07-27T07:16:05Z [14,485ms] [Warning] [omni.fabric.plugin] Warning: attribute viewportHandle not found for bucket id 7
+
+2026-07-27T07:16:05Z [14,498ms] [Warning] [usdrt.hydra.fabric_scene_delegate.plugin] using high frequency span is disabled
+2026-07-27T07:16:05Z [14,498ms] [Warning] [usdrt.hydra.fabric_scene_delegate.plugin] using high frequency span is disabled
+2026-07-27T07:16:10Z [19,279ms] [Warning] [isaaclab.actuators.actuator_pd] The <ImplicitActuatorCfg> object has a value for 'effort_limit'. This parameter will be removed in the future. To set the effort limit, please use 'effort_limit_sim' instead.
+2026-07-27T07:16:10Z [19,279ms] [Warning] [isaaclab.actuators.actuator_pd] The <ImplicitActuatorCfg> object has a value for 'velocity_limit'. Previously, although this value was specified, it was not getting used by implicit actuators. Since this parameter affects the simulation behavior, we continue to not use it. This parameter will be removed in the future. To set the velocity limit, please use 'velocity_limit_sim' instead.
+2026-07-27T07:16:10Z [19,350ms] [Warning] [isaaclab.actuators.actuator_pd] The <ImplicitActuatorCfg> object has a value for 'effort_limit'. This parameter will be removed in the future. To set the effort limit, please use 'effort_limit_sim' instead.
+2026-07-27T07:16:10Z [19,357ms] [Warning] [isaaclab.actuators.actuator_pd] The <ImplicitActuatorCfg> object has a value for 'effort_limit'. This parameter will be removed in the future. To set the effort limit, please use 'effort_limit_sim' instead.
+2026-07-27T07:16:10Z [19,357ms] [Warning] [isaaclab.actuators.actuator_pd] The <ImplicitActuatorCfg> object has a value for 'velocity_limit'. Previously, although this value was specified, it was not getting used by implicit actuators. Since this parameter affects the simulation behavior, we continue to not use it. This parameter will be removed in the future. To set the velocity limit, please use 'velocity_limit_sim' instead.
+2026-07-27T07:16:10Z [19,442ms] [Warning] [usdrt.hydra.fabric_scene_delegate.plugin] using high frequency span with attrs is disabled
+2026-07-27T07:16:10Z [19,493ms] [Warning] [usdrt.hydra.fabric_scene_delegate.plugin] using high frequency span with attrs is disabled
+2026-07-27T07:16:13Z [22,214ms] [Warning] [omni.syntheticdata.plugin] OgnSdPostRenderVarToHost : rendervar copy from texture directly to host buffer is counter-performant. Please use copy from texture to device buffer first.
+2026-07-27T07:16:16Z [25,840ms] [Warning] [carb] Client gpu.foundation.plugin has acquired [gpu::unstable::IMemoryBudgetManagerFactory v0.1] 100 times. Consider accessing this interface with carb::getCachedInterface() (Performance warning)
