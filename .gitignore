@@ -3,4 +3,14 @@
 *.html
 logs/
 outputs/*
-*.egg-info
+*.egg-info# 학습 결과물 (체크포인트, 로그, 영상 등) - Git에 올리지 않음
+gmp/checkpoints/
+gmp/videos/
+gmp/sweep_logs/
+gmp/*.log
+motions/*.gif
+motions/*.png
+motions/*.npz
+motions/lafan1_walk/
+motions/raw_lafan1/
+humanoid_amp.egg-info/

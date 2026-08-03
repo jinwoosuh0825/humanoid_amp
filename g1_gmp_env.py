@@ -17,12 +17,14 @@ import torch
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
+from isaaclab.sensors import ContactSensor
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from isaaclab.utils.math import quat_apply_inverse
 
 from .g1_amp_env import compute_obs
 from .g1_gmp_env_cfg import G1GmpEnvCfg
 from .motions import MotionLoader
-from .gmp.cvae_model import MotionDecoder
+from .gmp.cvae_model import MotionDecoder, _mlp
 from .gmp.motion_state import KEY_BODY_NAMES, REFERENCE_BODY_NAME, MotionStateSpec, compute_motion_state
 
 
@@ -69,11 +71,46 @@ class G1GmpEnv(DirectRLEnv):
             f"(motion_dim={checkpoint['motion_dim']}, latent_dim={checkpoint['latent_dim']})"
         )
 
+        # load frozen command encoder f_psi(c_t, m_t) -> z_{t+1} (replaces random z sampling,
+        # which was found to collapse the generated base_lin_vel to near-zero within ~20 steps
+        # of auto-regressive rollout -- see gmp/check_rollout.py)
+        cmd_checkpoint = torch.load(self.cfg.command_encoder_checkpoint, map_location=self.device, weights_only=False)
+        self.command_encoder = _mlp(
+            cmd_checkpoint["obs_dim"], cmd_checkpoint["hidden_sizes"], cmd_checkpoint["latent_dim"]
+        ).to(self.device)
+        self.command_encoder.load_state_dict(cmd_checkpoint["command_encoder_state_dict"])
+        self.command_encoder.eval()
+        for p in self.command_encoder.parameters():
+            p.requires_grad_(False)
+        self.command = torch.tensor(
+            [self.cfg.command_vx, self.cfg.command_vy, 0.0], device=self.device
+        ).repeat(self.num_envs, 1)
+        # target yaw rate for rew_task_ang_vel (0 = walk straight)
+        self.command_wz = torch.full((self.num_envs,), self.cfg.command_wz, device=self.device)
+        print(f"[GMP] Loaded frozen command encoder from {self.cfg.command_encoder_checkpoint}")
+
         # per-env online GMP reference motion state (auto-regressively generated, open-loop)
         self.m_ref = torch.zeros((self.num_envs, checkpoint["motion_dim"]), device=self.device)
 
+        # world-frame "down" direction, used to compute the projected gravity vector in the
+        # pelvis body frame (upright: z-component ~ -1, upside-down: z-component ~ +1)
+        self.gravity_vec_w = torch.tensor([0.0, 0.0, -1.0], device=self.device).repeat(self.num_envs, 1)
+
+        # feet body indexes on the contact sensor, for feet-air-time / no-fly rewards
+        self.feet_ids, _ = self.contact_sensor.find_bodies(self.cfg.feet_body_regex)
+
+        # per-episode, per-foot contact-event counter (for the foot-balance penalty, which
+        # discourages a one-legged gait exploit -- see NOTE in g1_gmp_env_cfg.py)
+        self.foot_contact_counts = torch.zeros(self.num_envs, len(self.feet_ids), device=self.device)
+
+        # action history, for the action-rate penalty (Unitree G1 config's `action_rate`,
+        # computed on the change between consecutive actions rather than raw action magnitude)
+        self.actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
+        self.prev_actions = torch.zeros(self.num_envs, self.cfg.action_space, device=self.device)
+
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot)
+        self.contact_sensor = ContactSensor(self.cfg.contact_sensor)
         # add ground plane
         spawn_ground_plane(
             prim_path="/World/ground",
@@ -87,13 +124,15 @@ class G1GmpEnv(DirectRLEnv):
         )
         # clone and replicate
         self.scene.clone_environments(copy_from_source=False)
-        # add articulation to scene
+        # add articulation and sensors to scene
         self.scene.articulations["robot"] = self.robot
+        self.scene.sensors["contact_sensor"] = self.contact_sensor
         # add lights
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor):
+        self.prev_actions = self.actions.clone()
         self.actions = actions.clone()
 
     def _apply_action(self):
@@ -115,9 +154,14 @@ class G1GmpEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         # advance the frozen GMP reference trajectory by one step: auto-regressive, open-loop
         # (independent of the policy's actual state), following Fig. 2(c) of the GMP paper.
+        # z comes from the trained command encoder (fixed target command), not random sampling.
         with torch.no_grad():
-            z = torch.randn(self.num_envs, self.gmp_decoder.latent_dim, device=self.device)
+            cmd_obs = torch.cat([self.command, self.m_ref], dim=-1)
+            z = self.command_encoder(cmd_obs)
             self.m_ref = self.gmp_decoder(z, self.m_ref)
+            # guard against occasional decoder divergence over a long (300-step) episode --
+            # see the matching clamp/comment in gmp/command_env.py
+            self.m_ref = torch.clamp(self.m_ref, min=-10.0, max=10.0)
 
         ref = self.motion_state_spec.split(self.m_ref)
         # reference dof positions are in the motion file's (npz) DOF order; reorder to match
@@ -128,18 +172,40 @@ class G1GmpEnv(DirectRLEnv):
         q = self.robot.data.joint_pos
         base_pos = self.robot.data.body_pos_w[:, self.ref_body_index]
         p = self.robot.data.body_pos_w[:, self.key_body_indexes] - base_pos.unsqueeze(1)
+        projected_gravity = self._compute_projected_gravity()
+        base_lin_vel_b, base_ang_vel_b = self._compute_base_frame_velocities()
+
+        first_contact = self.contact_sensor.compute_first_contact(self.step_dt)[:, self.feet_ids]
+        last_air_time = self.contact_sensor.data.last_air_time[:, self.feet_ids]
+        in_contact = self.contact_sensor.data.current_contact_time[:, self.feet_ids] > 0.0
+
+        # update per-episode, per-foot contact-event counts (for the foot-balance penalty)
+        self.foot_contact_counts += first_contact.float()
 
         total_reward, reward_log = compute_rewards(
             self.cfg.rew_termination,
             self.cfg.rew_action_l2,
+            self.cfg.rew_action_rate,
             self.cfg.rew_joint_pos_limits,
             self.cfg.rew_joint_acc_l2,
             self.cfg.rew_joint_vel_l2,
+            self.cfg.rew_lin_vel_z,
+            self.cfg.rew_ang_vel_xy,
             self.cfg.rew_dof_guidance,
             self.cfg.rew_keypos_guidance,
+            self.cfg.rew_task_lin_vel,
+            self.cfg.rew_task_ang_vel,
+            self.cfg.task_tracking_temp,
+            self.cfg.rew_projected_gravity,
+            self.cfg.rew_feet_air_time,
+            self.cfg.rew_no_fly,
+            self.cfg.rew_foot_balance,
+            self.cfg.feet_air_time_threshold,
             self.cfg.guidance_temp,
+            self.cfg.only_positive_rewards,
             self.reset_terminated,
             self.actions,
+            self.prev_actions,
             q,
             self.robot.data.soft_joint_pos_limits,
             self.robot.data.joint_acc,
@@ -147,14 +213,47 @@ class G1GmpEnv(DirectRLEnv):
             q_ref,
             p,
             p_ref,
+            base_lin_vel_b,
+            base_ang_vel_b,
+            self.command,
+            self.command_wz,
+            projected_gravity,
+            first_contact,
+            last_air_time,
+            in_contact,
+            self.foot_contact_counts,
+            self.reset_buf,
         )
         self.extras["log"] = reward_log
         return total_reward
 
+    def _compute_projected_gravity(self) -> torch.Tensor:
+        """World-down direction expressed in the pelvis body frame.
+
+        Upright: z-component ~ -1. Upside-down (e.g. a handstand): z-component ~ +1.
+        Used both as a termination check and as a regularization reward (GMP paper's
+        "Projected Gravity" term), since the height-only termination check below is
+        otherwise exploitable by staying inverted (pelvis kept high, but flipped).
+        """
+        base_quat = self.robot.data.body_quat_w[:, self.ref_body_index]
+        return quat_apply_inverse(base_quat, self.gravity_vec_w)
+
+    def _compute_base_frame_velocities(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Base linear/angular velocity expressed in the pelvis body frame (Unitree G1 config's
+        `lin_vel_z` / `ang_vel_xy` terms are defined in the body frame, not the world frame)."""
+        base_quat = self.robot.data.body_quat_w[:, self.ref_body_index]
+        base_lin_vel_b = quat_apply_inverse(base_quat, self.robot.data.body_lin_vel_w[:, self.ref_body_index])
+        base_ang_vel_b = quat_apply_inverse(base_quat, self.robot.data.body_ang_vel_w[:, self.ref_body_index])
+        return base_lin_vel_b, base_ang_vel_b
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         if self.cfg.early_termination:
-            died = self.robot.data.body_pos_w[:, self.ref_body_index, 2] < self.cfg.termination_height
+            fell = self.robot.data.body_pos_w[:, self.ref_body_index, 2] < self.cfg.termination_height
+            # upside-down check: projected gravity z-component > 0 means the pelvis "up" axis
+            # points more downward than upward -- i.e. the robot has flipped over.
+            upside_down = self._compute_projected_gravity()[:, 2] > 0.0
+            died = fell | upside_down
         else:
             died = torch.zeros_like(time_out)
         return died, time_out
@@ -164,6 +263,11 @@ class G1GmpEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         self.robot.reset(env_ids)
         super()._reset_idx(env_ids)
+
+        # avoid a spurious action-rate penalty from comparing against a stale previous episode
+        self.actions[env_ids] = 0.0
+        self.prev_actions[env_ids] = 0.0
+        self.foot_contact_counts[env_ids] = 0.0
 
         if self.cfg.reset_strategy == "default":
             root_state, joint_pos, joint_vel = self._reset_strategy_default(env_ids)
@@ -251,14 +355,27 @@ class G1GmpEnv(DirectRLEnv):
 def compute_rewards(
     rew_scale_termination: float,
     rew_scale_action_l2: float,
+    rew_scale_action_rate: float,
     rew_scale_joint_pos_limits: float,
     rew_scale_joint_acc_l2: float,
     rew_scale_joint_vel_l2: float,
+    rew_scale_lin_vel_z: float,
+    rew_scale_ang_vel_xy: float,
     rew_scale_dof_guidance: float,
     rew_scale_keypos_guidance: float,
+    rew_scale_task_lin_vel: float,
+    rew_scale_task_ang_vel: float,
+    task_tracking_temp: float,
+    rew_scale_projected_gravity: float,
+    rew_scale_feet_air_time: float,
+    rew_scale_no_fly: float,
+    rew_scale_foot_balance: float,
+    feet_air_time_threshold: float,
     guidance_temp: float,
+    only_positive_rewards: bool,
     reset_terminated: torch.Tensor,
     actions: torch.Tensor,
+    prev_actions: torch.Tensor,
     joint_pos: torch.Tensor,
     soft_joint_pos_limits: torch.Tensor,
     joint_acc: torch.Tensor,
@@ -266,15 +383,28 @@ def compute_rewards(
     q_ref: torch.Tensor,
     p: torch.Tensor,
     p_ref: torch.Tensor,
+    base_lin_vel_b: torch.Tensor,
+    base_ang_vel_b: torch.Tensor,
+    command: torch.Tensor,
+    command_wz: torch.Tensor,
+    projected_gravity: torch.Tensor,
+    first_contact: torch.Tensor,
+    last_air_time: torch.Tensor,
+    in_contact: torch.Tensor,
+    foot_contact_counts: torch.Tensor,
+    episode_done: torch.Tensor,
 ):
     rew_termination = rew_scale_termination * reset_terminated.float()
     rew_action_l2 = rew_scale_action_l2 * torch.sum(torch.square(actions), dim=1)
+    rew_action_rate = rew_scale_action_rate * torch.sum(torch.square(actions - prev_actions), dim=1)
 
     out_of_limits = -(joint_pos - soft_joint_pos_limits[:, :, 0]).clip(max=0.0)
     out_of_limits += (joint_pos - soft_joint_pos_limits[:, :, 1]).clip(min=0.0)
     rew_joint_pos_limits = rew_scale_joint_pos_limits * torch.sum(out_of_limits, dim=1)
 
     rew_joint_acc_l2 = rew_scale_joint_acc_l2 * torch.sum(torch.square(joint_acc), dim=1)
+    rew_lin_vel_z = rew_scale_lin_vel_z * torch.square(base_lin_vel_b[:, 2])
+    rew_ang_vel_xy = rew_scale_ang_vel_xy * torch.sum(torch.square(base_ang_vel_b[:, :2]), dim=1)
     rew_joint_vel_l2 = rew_scale_joint_vel_l2 * torch.sum(torch.square(joint_vel), dim=1)
 
     # GMP motion guidance reward (Eq. 11-13 of the GMP paper)
@@ -284,23 +414,82 @@ def compute_rewards(
     keypos_err = torch.norm((p - p_ref).reshape(p.shape[0], -1), dim=-1)
     rew_keypos_guidance = rew_scale_keypos_guidance * torch.exp(-guidance_temp * keypos_err)
 
+    # GMP paper Table I: "Task Reward" -- Linear Velocity (weight 3.0), Angular Velocity
+    # (weight 2.5): exp(-4*||v - c||^2). Rewards the robot itself for matching the fixed
+    # command directly (body-frame velocity), rather than only indirectly via m_ref.
+    lin_vel_err = torch.sum(torch.square(base_lin_vel_b[:, :2] - command[:, :2]), dim=1)
+    rew_task_lin_vel = rew_scale_task_lin_vel * torch.exp(-task_tracking_temp * lin_vel_err)
+
+    ang_vel_err = torch.square(base_ang_vel_b[:, 2] - command_wz)
+    rew_task_ang_vel = rew_scale_task_ang_vel * torch.exp(-task_tracking_temp * ang_vel_err)
+
+    # Projected gravity regularization (GMP paper Table I: "Projected Gravity", weight -6.0).
+    # Penalizes tilt away from upright; also closes the exploit where the height-only
+    # termination check can be satisfied by flipping upside-down instead of actually walking.
+    rew_projected_gravity = rew_scale_projected_gravity * torch.sum(torch.square(projected_gravity[:, :2]), dim=1)
+
+    # GMP paper Table I: "Feet Air Time" (weight 20) and "No Fly" (weight 0.8). Rewarded only at
+    # the instant a foot lands, based on how long it was airborne beyond the threshold -- this
+    # is the only term that directly requires lifting the feet (an alternating stepping gait)
+    # rather than e.g. sliding/shuffling while otherwise matching the guidance/base-velocity terms.
+    rew_feet_air_time = rew_scale_feet_air_time * torch.sum(
+        (last_air_time - feet_air_time_threshold) * first_contact.float(), dim=1
+    )
+    rew_no_fly = rew_scale_no_fly * (torch.sum(in_contact.float(), dim=1) >= 1.0).float()
+
+    # not in the GMP paper or Unitree's config -- rew_feet_air_time/rew_no_fly sum over both
+    # feet, so a policy can satisfy them by stepping with one leg while dragging the other.
+    # Penalize an imbalance in each foot's per-episode contact-event count directly. Applied
+    # only at episode end (not every step): mid-stride, the running left/right contact counts
+    # are naturally uneven for a stretch even with long, normal strides, and penalizing that
+    # every step was found to push the policy toward short, rapid, shuffling steps instead
+    # (this is what actually keeps the running counts synchronized) -- fighting directly
+    # against rew_feet_air_time's preference for longer strides.
+    rew_foot_balance = (
+        rew_scale_foot_balance
+        * torch.abs(foot_contact_counts[:, 0] - foot_contact_counts[:, 1])
+        * episode_done.float()
+    )
+
     total_reward = (
         rew_termination
         + rew_action_l2
+        + rew_action_rate
         + rew_joint_pos_limits
         + rew_joint_acc_l2
         + rew_joint_vel_l2
+        + rew_lin_vel_z
+        + rew_ang_vel_xy
         + rew_dof_guidance
         + rew_keypos_guidance
+        + rew_task_lin_vel
+        + rew_task_ang_vel
+        + rew_projected_gravity
+        + rew_feet_air_time
+        + rew_no_fly
+        + rew_foot_balance
     )
+    # Unitree G1 config's `only_positive_rewards`: clip the total at 0 before it reaches PPO,
+    # so large negative sums (e.g. termination) don't dominate/destabilize the learning signal.
+    if only_positive_rewards:
+        total_reward = total_reward.clip(min=0.0)
 
     log = {
         "rew_termination": (rew_termination).mean(),
         "rew_action_l2": (rew_action_l2).mean(),
+        "rew_action_rate": (rew_action_rate).mean(),
         "rew_joint_pos_limits": (rew_joint_pos_limits).mean(),
         "rew_joint_acc_l2": (rew_joint_acc_l2).mean(),
         "rew_joint_vel_l2": (rew_joint_vel_l2).mean(),
+        "rew_lin_vel_z": (rew_lin_vel_z).mean(),
+        "rew_ang_vel_xy": (rew_ang_vel_xy).mean(),
         "rew_dof_guidance": (rew_dof_guidance).mean(),
         "rew_keypos_guidance": (rew_keypos_guidance).mean(),
+        "rew_task_lin_vel": (rew_task_lin_vel).mean(),
+        "rew_task_ang_vel": (rew_task_ang_vel).mean(),
+        "rew_projected_gravity": (rew_projected_gravity).mean(),
+        "rew_feet_air_time": (rew_feet_air_time).mean(),
+        "rew_no_fly": (rew_no_fly).mean(),
+        "rew_foot_balance": (rew_foot_balance).mean(),
     }
     return total_reward, log

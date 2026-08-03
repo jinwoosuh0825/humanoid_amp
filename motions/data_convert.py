@@ -85,6 +85,12 @@ def compute_angular_velocity(q_prev, q_next, dt, eps=1e-8):
       - Extract rotation angle and axis from q_rel
       - Return (angle / dt) * axis
     """
+    # quaternion double-cover: q and -q represent the same rotation, but if adjacent frames
+    # happen to be stored in opposite hemispheres, differencing them without aligning first
+    # yields a spurious near-pi rotation instead of the true (near-zero) one. Align q_next to
+    # q_prev's hemisphere before differencing so we always take the shortest rotation.
+    if np.dot(q_prev, q_next) < 0.0:
+        q_next = -q_next
     q_inv = quaternion_inverse(q_prev)
     q_rel = quaternion_multiply(q_inv, q_next)
     norm_q_rel = np.linalg.norm(q_rel)
