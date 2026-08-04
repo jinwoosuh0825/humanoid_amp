@@ -26,53 +26,86 @@ def _mlp(input_dim: int, hidden_sizes: list[int], output_dim: int) -> nn.Sequent
 
 
 class MotionEncoder(nn.Module):
-    """f_theta: q(z_{t+1} | m_{t+1}, m_t). Training-only; discarded for online generation."""
+    """f_theta: q(z_{t+1} | m_{t+1}, m_t). Training-only; discarded for online generation.
 
-    def __init__(self, motion_dim: int, latent_dim: int, hidden_sizes: list[int] = [256, 256]):
+    Optional phase_dim: if > 0, forward() also takes (phase_next, phase_curr) side inputs
+    (e.g. [sin(phase), cos(phase)], phase_dim=2), concatenated alongside m_next/m_curr. This does
+    NOT change the motion-state m_t definition used elsewhere (RL env guidance rewards etc.) --
+    it's purely an extra conditioning signal for this CVAE experiment. Default phase_dim=0
+    preserves the exact old behavior/signature for all existing callers.
+    """
+
+    def __init__(self, motion_dim: int, latent_dim: int, hidden_sizes: list[int] = [256, 256], phase_dim: int = 0):
         super().__init__()
         self.latent_dim = latent_dim
-        self.net = _mlp(2 * motion_dim, hidden_sizes, 2 * latent_dim)
+        self.phase_dim = phase_dim
+        self.net = _mlp(2 * motion_dim + 2 * phase_dim, hidden_sizes, 2 * latent_dim)
 
-    def forward(self, m_next: torch.Tensor, m_curr: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        out = self.net(torch.cat([m_next, m_curr], dim=-1))
+    def forward(
+        self,
+        m_next: torch.Tensor,
+        m_curr: torch.Tensor,
+        phase_next: torch.Tensor | None = None,
+        phase_curr: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs = [m_next, m_curr]
+        if self.phase_dim > 0:
+            inputs += [phase_next, phase_curr]
+        out = self.net(torch.cat(inputs, dim=-1))
         mu, logvar = out.chunk(2, dim=-1)
         logvar = torch.clamp(logvar, -10.0, 2.0)
         return mu, logvar
 
 
 class MotionDecoder(nn.Module):
-    """f_phi: p(m_{t+1} | z_{t+1}, m_t). Frozen and used online (auto-regressively) during RL training."""
+    """f_phi: p(m_{t+1} | z_{t+1}, m_t). Frozen and used online (auto-regressively) during RL training.
 
-    def __init__(self, motion_dim: int, latent_dim: int, hidden_sizes: list[int] = [256, 256]):
+    Optional phase_dim: see MotionEncoder docstring. phase_curr is the current phase (e.g.
+    [sin(phase), cos(phase)]), threaded through by the *caller* (never predicted by the model --
+    it advances deterministically like a clock, e.g. phase += 2*pi/T each generation step).
+    """
+
+    def __init__(self, motion_dim: int, latent_dim: int, hidden_sizes: list[int] = [256, 256], phase_dim: int = 0):
         super().__init__()
         self.motion_dim = motion_dim
         self.latent_dim = latent_dim
-        self.net = _mlp(latent_dim + motion_dim, hidden_sizes, motion_dim)
+        self.phase_dim = phase_dim
+        self.net = _mlp(latent_dim + motion_dim + phase_dim, hidden_sizes, motion_dim)
 
-    def forward(self, z: torch.Tensor, m_curr: torch.Tensor) -> torch.Tensor:
-        return self.net(torch.cat([z, m_curr], dim=-1))
+    def forward(self, z: torch.Tensor, m_curr: torch.Tensor, phase_curr: torch.Tensor | None = None) -> torch.Tensor:
+        inputs = [z, m_curr]
+        if self.phase_dim > 0:
+            inputs.append(phase_curr)
+        return self.net(torch.cat(inputs, dim=-1))
 
 
 class MotionCVAE(nn.Module):
     """Full CVAE (encoder + decoder) used for offline training on retargeted reference motions."""
 
-    def __init__(self, motion_dim: int, latent_dim: int = 32, hidden_sizes: list[int] = [256, 256]):
+    def __init__(self, motion_dim: int, latent_dim: int = 32, hidden_sizes: list[int] = [256, 256], phase_dim: int = 0):
         super().__init__()
         self.motion_dim = motion_dim
         self.latent_dim = latent_dim
-        self.encoder = MotionEncoder(motion_dim, latent_dim, hidden_sizes)
-        self.decoder = MotionDecoder(motion_dim, latent_dim, hidden_sizes)
+        self.phase_dim = phase_dim
+        self.encoder = MotionEncoder(motion_dim, latent_dim, hidden_sizes, phase_dim=phase_dim)
+        self.decoder = MotionDecoder(motion_dim, latent_dim, hidden_sizes, phase_dim=phase_dim)
 
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return mu + eps * std
 
-    def forward(self, m_curr: torch.Tensor, m_next: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        m_curr: torch.Tensor,
+        m_next: torch.Tensor,
+        phase_curr: torch.Tensor | None = None,
+        phase_next: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Teacher-forced training step: encode (m_curr, m_next) -> z -> decode -> m_hat_next."""
-        mu, logvar = self.encoder(m_next, m_curr)
+        mu, logvar = self.encoder(m_next, m_curr, phase_next, phase_curr)
         z = self.reparameterize(mu, logvar)
-        m_hat_next = self.decoder(z, m_curr)
+        m_hat_next = self.decoder(z, m_curr, phase_curr)
         return m_hat_next, mu, logvar
 
     @torch.no_grad()
