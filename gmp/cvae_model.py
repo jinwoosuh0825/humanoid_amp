@@ -11,6 +11,8 @@ Conditional Variational Auto-Encoder (CVAE) motion generator, following the
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
 
@@ -77,6 +79,29 @@ class MotionDecoder(nn.Module):
         if self.phase_dim > 0:
             inputs.append(phase_curr)
         return self.net(torch.cat(inputs, dim=-1))
+
+
+class CommandConditionedEncoder(nn.Module):
+    """f_psi(m_t, c_t) -> (mean, logvar) of z. c_t = (forward_vel, yaw_rate), body-frame.
+
+    Trained by gmp/train_command_encoder_selffeed_cmd2d.py via genuine multi-step auto-regressive
+    rollout against the frozen MotionDecoder (decoder weights never update). Used online (frozen)
+    here to replace random/unconditioned z sampling for the GMP reference generator, so the
+    reference trajectory tracks a given velocity command instead of just wandering.
+    """
+
+    def __init__(self, motion_dim: int, cmd_dim: int, latent_dim: int, hidden_sizes: list[int], min_std: float):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.cmd_dim = cmd_dim
+        self.min_logvar = 2 * math.log(min_std)
+        self.net = _mlp(motion_dim + cmd_dim, hidden_sizes, 2 * latent_dim)
+
+    def forward(self, m_curr: torch.Tensor, c: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        out = self.net(torch.cat([m_curr, c], dim=-1))
+        mean, logvar = out.chunk(2, dim=-1)
+        logvar = torch.clamp(logvar, self.min_logvar, 2.0)
+        return mean, logvar
 
 
 class MotionCVAE(nn.Module):

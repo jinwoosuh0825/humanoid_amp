@@ -24,7 +24,7 @@ from isaaclab.utils.math import quat_apply_inverse
 from .g1_amp_env import compute_obs
 from .g1_gmp_env_cfg import G1GmpEnvCfg
 from .motions import MotionLoader
-from .gmp.cvae_model import MotionDecoder, _mlp
+from .gmp.cvae_model import CommandConditionedEncoder, MotionDecoder
 from .gmp.motion_state import KEY_BODY_NAMES, REFERENCE_BODY_NAME, MotionStateSpec, compute_motion_state
 
 
@@ -71,22 +71,29 @@ class G1GmpEnv(DirectRLEnv):
             f"(motion_dim={checkpoint['motion_dim']}, latent_dim={checkpoint['latent_dim']})"
         )
 
-        # load frozen command encoder f_psi(c_t, m_t) -> z_{t+1} (replaces random z sampling,
-        # which was found to collapse the generated base_lin_vel to near-zero within ~20 steps
-        # of auto-regressive rollout -- see gmp/check_rollout.py)
+        # load frozen command encoder f_psi(m_t, c_t) -> (mean, logvar) of z_{t+1} (replaces
+        # random z sampling, which was found to collapse the generated base_lin_vel to near-zero
+        # within ~20 steps of auto-regressive rollout -- see gmp/check_rollout.py). c_t =
+        # (forward_vel, yaw_rate) in the character's own body frame -- see the module docstring
+        # in gmp/train_command_encoder_selffeed_cmd2d.py for why lateral_vel was dropped.
         cmd_checkpoint = torch.load(self.cfg.command_encoder_checkpoint, map_location=self.device, weights_only=False)
-        self.command_encoder = _mlp(
-            cmd_checkpoint["obs_dim"], cmd_checkpoint["hidden_sizes"], cmd_checkpoint["latent_dim"]
+        self.command_encoder = CommandConditionedEncoder(
+            cmd_checkpoint["motion_dim"],
+            cmd_checkpoint["cmd_dim"],
+            cmd_checkpoint["latent_dim"],
+            cmd_checkpoint["hidden_sizes"],
+            cmd_checkpoint["min_std"],
         ).to(self.device)
         self.command_encoder.load_state_dict(cmd_checkpoint["command_encoder_state_dict"])
         self.command_encoder.eval()
         for p in self.command_encoder.parameters():
             p.requires_grad_(False)
+        # command = (forward_vel, yaw_rate); command_vx is the forward-speed target,
+        # command_wz is the yaw-rate target -- same two scalars feed both the command encoder's
+        # conditioning input and the task-tracking reward below, so they can't disagree.
         self.command = torch.tensor(
-            [self.cfg.command_vx, self.cfg.command_vy, 0.0], device=self.device
+            [self.cfg.command_vx, self.cfg.command_wz], device=self.device
         ).repeat(self.num_envs, 1)
-        # target yaw rate for rew_task_ang_vel (0 = walk straight)
-        self.command_wz = torch.full((self.num_envs,), self.cfg.command_wz, device=self.device)
         print(f"[GMP] Loaded frozen command encoder from {self.cfg.command_encoder_checkpoint}")
 
         # per-env online GMP reference motion state (auto-regressively generated, open-loop)
@@ -156,8 +163,9 @@ class G1GmpEnv(DirectRLEnv):
         # (independent of the policy's actual state), following Fig. 2(c) of the GMP paper.
         # z comes from the trained command encoder (fixed target command), not random sampling.
         with torch.no_grad():
-            cmd_obs = torch.cat([self.command, self.m_ref], dim=-1)
-            z = self.command_encoder(cmd_obs)
+            mean, logvar = self.command_encoder(self.m_ref, self.command)
+            std = (0.5 * logvar).exp()
+            z = mean + std * torch.randn_like(mean)
             self.m_ref = self.gmp_decoder(z, self.m_ref)
             # guard against occasional decoder divergence over a long (300-step) episode --
             # see the matching clamp/comment in gmp/command_env.py
@@ -168,6 +176,8 @@ class G1GmpEnv(DirectRLEnv):
         # the simulation's joint order (same mapping used for RSI resets).
         q_ref = ref["dof_pos"][:, self.motion_dof_indexes]
         p_ref = ref["key_pos"]  # already relative to base, same key-body order as self.key_body_indexes
+        ref_lin_vel = ref["base_lin_vel"]  # world-frame; only ever used via its horizontal *magnitude*
+        # below (frame-invariant), so no need to rotate it into a body/heading frame.
 
         q = self.robot.data.joint_pos
         base_pos = self.robot.data.body_pos_w[:, self.ref_body_index]
@@ -196,6 +206,9 @@ class G1GmpEnv(DirectRLEnv):
             self.cfg.rew_task_lin_vel,
             self.cfg.rew_task_ang_vel,
             self.cfg.task_tracking_temp,
+            self.cfg.rew_forward_progress,
+            self.cfg.progress_temp,
+            self.cfg.rew_lateral_vel,
             self.cfg.rew_projected_gravity,
             self.cfg.rew_feet_air_time,
             self.cfg.rew_no_fly,
@@ -215,8 +228,8 @@ class G1GmpEnv(DirectRLEnv):
             p_ref,
             base_lin_vel_b,
             base_ang_vel_b,
+            ref_lin_vel,
             self.command,
-            self.command_wz,
             projected_gravity,
             first_contact,
             last_air_time,
@@ -366,6 +379,9 @@ def compute_rewards(
     rew_scale_task_lin_vel: float,
     rew_scale_task_ang_vel: float,
     task_tracking_temp: float,
+    rew_scale_forward_progress: float,
+    progress_temp: float,
+    rew_scale_lateral_vel: float,
     rew_scale_projected_gravity: float,
     rew_scale_feet_air_time: float,
     rew_scale_no_fly: float,
@@ -385,8 +401,8 @@ def compute_rewards(
     p_ref: torch.Tensor,
     base_lin_vel_b: torch.Tensor,
     base_ang_vel_b: torch.Tensor,
+    ref_lin_vel: torch.Tensor,
     command: torch.Tensor,
-    command_wz: torch.Tensor,
     projected_gravity: torch.Tensor,
     first_contact: torch.Tensor,
     last_air_time: torch.Tensor,
@@ -417,11 +433,38 @@ def compute_rewards(
     # GMP paper Table I: "Task Reward" -- Linear Velocity (weight 3.0), Angular Velocity
     # (weight 2.5): exp(-4*||v - c||^2). Rewards the robot itself for matching the fixed
     # command directly (body-frame velocity), rather than only indirectly via m_ref.
-    lin_vel_err = torch.sum(torch.square(base_lin_vel_b[:, :2] - command[:, :2]), dim=1)
+    # command = (forward_vel, yaw_rate); lateral_vel has no commanded target (always 0) --
+    # see the module docstring in gmp/train_command_encoder_selffeed_cmd2d.py for why.
+    lin_vel_target = torch.stack([command[:, 0], torch.zeros_like(command[:, 0])], dim=-1)
+    lin_vel_err = torch.sum(torch.square(base_lin_vel_b[:, :2] - lin_vel_target), dim=1)
     rew_task_lin_vel = rew_scale_task_lin_vel * torch.exp(-task_tracking_temp * lin_vel_err)
 
-    ang_vel_err = torch.square(base_ang_vel_b[:, 2] - command_wz)
+    ang_vel_err = torch.square(base_ang_vel_b[:, 2] - command[:, 1])
     rew_task_ang_vel = rew_scale_task_ang_vel * torch.exp(-task_tracking_temp * ang_vel_err)
+
+    # TEMPORARY stand-in for task reward (2026-08-05, see NOTE in g1_gmp_env_cfg.py) -- revert to
+    # rew_task_lin_vel/rew_task_ang_vel once command_encoder's own speed-command sensitivity is
+    # fixed. First tried a plain-linear version (weight * base_lin_vel_b[:,0], no target): that
+    # had no ceiling, so the policy just kept accelerating (measured ~2.3 m/s and still climbing,
+    # 3x+ the reference's own pace) while dof_guidance actively got worse. Switched to tracking
+    # the reference's OWN achieved speed instead of a fixed number -- bounded in [0, weight] like
+    # a real task reward, but the "target" now moves together with whatever guidance is already
+    # pulling the robot toward, so it can't fight guidance the way the fixed 0.5 command did.
+    # Speed (magnitude), not the signed forward component: ref_lin_vel is world-frame and m_t
+    # carries no heading, so there's no cheap way to know which world-frame direction is "the
+    # reference's forward" -- comparing frame-invariant magnitudes sidesteps that entirely.
+    ref_speed = torch.norm(ref_lin_vel[:, :2], dim=-1)
+    actual_speed = torch.norm(base_lin_vel_b[:, :2], dim=-1)
+    rew_forward_progress = rew_scale_forward_progress * torch.exp(
+        -progress_temp * torch.square(actual_speed - ref_speed)
+    )
+
+    # 2026-08-05, TEMPORARY (see NOTE in g1_gmp_env_cfg.py): rew_forward_progress above only
+    # tracks speed magnitude, so it never penalized the robot for moving sideways relative to its
+    # own facing instead of straight ahead. Directly suppress body-frame lateral velocity to fix
+    # the observed side-shuffling gait -- yaw-rate task reward was considered instead but only
+    # constrains rotation, not translation, so it wouldn't have addressed this.
+    rew_lateral_vel = rew_scale_lateral_vel * torch.square(base_lin_vel_b[:, 1])
 
     # Projected gravity regularization (GMP paper Table I: "Projected Gravity", weight -6.0).
     # Penalizes tilt away from upright; also closes the exploit where the height-only
@@ -464,6 +507,8 @@ def compute_rewards(
         + rew_keypos_guidance
         + rew_task_lin_vel
         + rew_task_ang_vel
+        + rew_forward_progress
+        + rew_lateral_vel
         + rew_projected_gravity
         + rew_feet_air_time
         + rew_no_fly
@@ -487,6 +532,8 @@ def compute_rewards(
         "rew_keypos_guidance": (rew_keypos_guidance).mean(),
         "rew_task_lin_vel": (rew_task_lin_vel).mean(),
         "rew_task_ang_vel": (rew_task_ang_vel).mean(),
+        "rew_forward_progress": (rew_forward_progress).mean(),
+        "rew_lateral_vel": (rew_lateral_vel).mean(),
         "rew_projected_gravity": (rew_projected_gravity).mean(),
         "rew_feet_air_time": (rew_feet_air_time).mean(),
         "rew_no_fly": (rew_no_fly).mean(),

@@ -35,6 +35,15 @@ def main():
     parser.add_argument("--render_scene", action="store_true")
     parser.add_argument("--stride", type=int, default=2, help="Render every N-th frame (speed up / shrink file).")
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument(
+        "--fixed_extent",
+        type=float,
+        default=None,
+        help="Chase camera: fixed half-width (meters) of the view box, always centered on the "
+        "pelvis. Use the SAME value across multiple renders to make them directly comparable "
+        "(same zoom level), and to keep the character large/visible instead of shrinking to a "
+        "dot inside a box sized to fit its entire (possibly long) path.",
+    )
     args = parser.parse_args()
 
     loader = MotionLoader(motion_file=args.motion_file, device="cpu")
@@ -56,11 +65,20 @@ def main():
         vertices = body_positions[frame]
         ax.clear()
         ax.scatter(*vertices.T, color="black", depthshade=False)
-        if args.render_scene:
+        if args.fixed_extent is not None:
+            # chase camera: fixed-size box, always centered on the pelvis (body index 0) --
+            # keeps the character a consistent, visible size regardless of how far it travels,
+            # and (with the same --fixed_extent value) makes separate renders directly comparable.
+            center = vertices[0].copy()
+            diff = np.array([args.fixed_extent] * 3)
+        elif args.render_scene:
             minimum = np.min(body_positions.reshape(-1, 3), axis=0)
             maximum = np.max(body_positions.reshape(-1, 3), axis=0)
             center = 0.5 * (maximum + minimum)
-            diff = 0.75 * (maximum - minimum)
+            # cube-shaped view box (largest single-axis extent applied to all 3 axes), instead of
+            # stretching per-axis to the exact trajectory extent -- a straight/long-forward path
+            # with little lateral movement would otherwise render as a thin, hard-to-read corridor.
+            diff = np.array([0.75 * np.max(maximum - minimum).item()] * 3)
         else:
             minimum = np.min(vertices, axis=0)
             maximum = np.max(vertices, axis=0)
